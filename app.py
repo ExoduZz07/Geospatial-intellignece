@@ -5,6 +5,8 @@ import rasterio
 from rasterio.enums import Resampling
 import numpy as np
 from PIL import Image
+import glob
+import cv2
 
 # --- 1. CLOUD-SAFE IMPORTS & SECURITY ---
 from run_inference import run_ai_scanner
@@ -21,6 +23,8 @@ if 'scan_complete' not in st.session_state:
     st.session_state.scan_complete = False
 if 'final_map_path' not in st.session_state:
     st.session_state.final_map_path = ""
+if 'original_map' not in st.session_state:
+    st.session_state.original_map = ""
 
 # --- ADVANCED CUSTOM CSS ---
 st.markdown("""
@@ -68,8 +72,19 @@ with tab1:
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        st.markdown("### 📍 Target Acquisition")
-        uploaded_file = st.file_uploader("Drag and drop your Drone Orthomosaic (.tif) here", type=['tif', 'tiff'])
+        st.markdown("### 📍 Target Acquisition (Enterprise)")
+        
+        # Look directly into the Colab-mounted Google Drive
+        drive_path = "/content/drive/MyDrive/TerraScan_Data/"
+        tif_files = glob.glob(f"{drive_path}*.tif")
+        
+        if not tif_files:
+            st.warning("⚠️ No files found. Ensure Colab is running & Drive mounted.")
+            target_file_path = None
+        else:
+            file_names = [os.path.basename(f) for f in tif_files]
+            selected_name = st.selectbox("Select Target Area:", file_names)
+            target_file_path = os.path.join(drive_path, selected_name)
         
         with st.expander("🛠️ Advanced Configuration"):
             st.slider("Texture Veto Sensitivity", 1, 100, 80)
@@ -83,18 +98,12 @@ with tab1:
 
     # --- PIPELINE EXECUTION ---
     if run_btn:
-        if uploaded_file is None:
-            st.error("❌ Please upload a .tif file first!")
+        if target_file_path is None:
+            st.error("❌ Please select a file from the dropdown first!")
         else:
-            # 1. Save uploaded file (Relative Path for Cloud Compatibility)
-            upload_dir = "Input_Uploads"
-            os.makedirs(upload_dir, exist_ok=True)
-            tif_path = os.path.join(upload_dir, uploaded_file.name)
+            # We bypass the upload/save entirely and just use the Drive path
+            tif_path = target_file_path
             
-            with st.spinner("Buffering image to core memory..."):
-                with open(tif_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-
             with st.status("Initializing GeoAI Sequence...", expanded=True) as status:
                 try:
                     # STEP 1: AI INFERENCE
@@ -128,17 +137,19 @@ with tab1:
                     # LOCK INTO MEMORY
                     st.session_state.scan_complete = True
                     st.session_state.final_map_path = final_map_path
+                    st.session_state.original_map = tif_path # Save original for X-Ray
 
                 except Exception as e:
                     status.update(label="System Failure", state="error", expanded=True)
                     st.error(f"❌ Crash at Module: {e}")
                     st.session_state.scan_complete = False
 
-    # --- THE INTERACTIVE CLASS VIEWER ---
+    # --- THE INTERACTIVE CLASS VIEWER (Upgraded) ---
     if st.session_state.scan_complete and os.path.exists(st.session_state.final_map_path):
         st.divider()
         st.markdown("### 🔍 Live Map Inspector")
         
+        view_mode = st.radio("Display Mode:", ["AI Mask Only", "Overlay (Blended)", "Side-by-Side Compare"], horizontal=True)
         class_choice = st.selectbox("Isolate specific predicted features:", [
             "All Classes", 
             "1 - RCC Roofs (Grey)", 
@@ -150,13 +161,22 @@ with tab1:
         ])
 
         with st.spinner("Rendering web-optimized preview..."):
-            with rasterio.open(st.session_state.final_map_path) as src:
-                scale_factor = 1024 / max(src.width, src.height)
-                new_height = int(src.height * scale_factor)
-                new_width = int(src.width * scale_factor)
-                data = src.read(1, out_shape=(new_height, new_width), resampling=Resampling.nearest)
+            # 1. Load the AI Mask
+            with rasterio.open(st.session_state.final_map_path) as src_mask:
+                scale_factor = 1024 / max(src_mask.width, src_mask.height)
+                new_height = int(src_mask.height * scale_factor)
+                new_width = int(src_mask.width * scale_factor)
+                data = src_mask.read(1, out_shape=(new_height, new_width), resampling=Resampling.nearest)
             
-            # QGIS Color Mapping
+            # 2. Load Original Image safely for comparison
+            with rasterio.open(st.session_state.original_map) as src_orig:
+                orig_raw = src_orig.read(out_shape=(src_orig.count, new_height, new_width), resampling=Resampling.nearest)
+                if src_orig.count >= 3:
+                    orig_img = np.moveaxis(orig_raw[:3], 0, -1) 
+                else:
+                    orig_img = np.stack((orig_raw[0],)*3, axis=-1)
+            
+            # 3. Apply Colors
             color_map = {
                 1: [140, 140, 140], 2: [0, 191, 255], 3: [225, 87, 89],
                 4: [156, 39, 176], 5: [78, 121, 167], 6: [242, 203, 108]
@@ -171,7 +191,25 @@ with tab1:
                 target_val = int(class_choice.split(" ")[0])
                 viz_img[data == target_val] = color_map.get(target_val, [0, 0, 0])
 
-            st.image(viz_img, caption=f"Previewing: {class_choice}", use_column_width=True)
+            # 4. Display Logic
+            if view_mode == "Side-by-Side Compare":
+                sub_col1, sub_col2 = st.columns(2)
+                sub_col1.image(orig_img, caption="Original Orthomosaic", use_column_width=True)
+                sub_col2.image(viz_img, caption=f"AI Output: {class_choice}", use_column_width=True)
+            
+            elif view_mode == "Overlay (Blended)":
+                orig_img = orig_img.astype(np.uint8)
+                overlay = cv2.addWeighted(orig_img, 0.6, viz_img, 0.4, 0)
+                
+                # Keep background clear if isolating a specific feature
+                if class_choice != "All Classes":
+                    background_mask = (viz_img == [0, 0, 0]).all(axis=2)
+                    overlay[background_mask] = orig_img[background_mask]
+                    
+                st.image(overlay, caption="X-Ray Overlay View", use_column_width=True)
+            
+            else:
+                st.image(viz_img, caption=f"Previewing: {class_choice}", use_column_width=True)
 
 with tab2:
     st.markdown("### 🗄️ Recent Scans")
@@ -190,7 +228,3 @@ with tab2:
                         mime="image/tiff",
                         key=f"gallery_{f}"
                     )
-        else:
-            st.caption("No maps generated yet.")
-    else:
-        st.caption("System waiting for first successful scan to create gallery.")
