@@ -56,11 +56,11 @@ streamlit run app.py --server.maxUploadSize 10000
 
 Outputs map to a strict 1-channel QGIS-compliant `.tif` raster with embedded colormaps.
 
-| ID | Class Label | Target Hex |
-| :--- | :--- | :--- |
-| `1` | RCC Structures | `#8C8C8C` | grey
-| `2` | Tin Roofing | `#00BFFF` | cyan
-| `3` | Tiled Roofing | `#E15759` | red
-| `4` | Utility Infrastructure | `#9C27B0` | purple
-| `5` | Hydrology | `#4E79A7` | blue
-| `6` | Road Networks | `#F2CB6C` | yellow
+| ID | Class Label | Target Hex | colour |
+| :--- | :--- | :--- | :--- |
+| `1` | RCC Structures | `#8C8C8C` | grey |
+| `2` | Tin Roofing | `#00BFFF` | cyan |
+| `3` | Tiled Roofing | `#E15759` | red |
+| `4` | Utility Infrastructure | `#9C27B0` | purple |
+| `5` | Hydrology | `#4E79A7` | blue |
+| `6` | Road Networks | `#F2CB6C` | yellow |
