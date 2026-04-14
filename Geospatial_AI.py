@@ -97,8 +97,8 @@ def apply_color_and_context(raw_img_path, ai_mask_path):
                                 
                     final_patch[(water_filled == 255) & (final_patch == 0) & (~nodata_mask)] = ID_WATER
                     
-                   # =====================================================================
-                    # 4. ROADS (THE ANTI-GLITTER FIX)
+                  # =====================================================================
+                    # 4. ROADS (THE "LONG STREAK" ALGORITHM)
                     # =====================================================================
                     shadow_mask = (V < 55).astype(np.uint8) * 255
                     mask_r1 = cv2.inRange(hsv_blurred, np.array([0, 0, 60]), np.array([180, 35, 170])) 
@@ -108,18 +108,28 @@ def apply_color_and_context(raw_img_path, ai_mask_path):
                     road_no_shadows = cv2.bitwise_and(road_combined, cv2.bitwise_not(shadow_mask))
                     road_no_buildings = cv2.bitwise_and(road_no_shadows, cv2.bitwise_not(building_mask.astype(np.uint8)*255))
                     
-                    # 1. Use a larger kernel (45x45) so we nuke the massive farms but don't shred the roads
-                    k_farm = cv2.getStructuringElement(cv2.MORPH_RECT, (45, 45))
-                    road_thin = cv2.morphologyEx(road_no_buildings, cv2.MORPH_TOPHAT, k_farm)
+                    # 1. Kill the microscopic glitter first
+                    road_base = cv2.morphologyEx(road_no_buildings, cv2.MORPH_OPEN, k_small)
                     
-                    # 2. NO MORPH_OPEN! We jump straight to closing the gaps to reconnect the road network
-                    road_reconnected = cv2.morphologyEx(road_thin, cv2.MORPH_CLOSE, k_large)
+                    # 2. Identify the "Farms" (Fat, wide blocks of pixels)
+                    # A 25x25 block is too wide to be a road. Only open areas survive this.
+                    k_fat = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
+                    fat_farms = cv2.morphologyEx(road_base, cv2.MORPH_OPEN, k_fat)
                     
-                    # 3. Filter out the remaining "glitter" (isolated tiny specks of dirt)
-                    num_r_labels, r_labels, r_stats, _ = cv2.connectedComponentsWithStats(road_reconnected, connectivity=8)
+                    # 3. Expand the farms slightly to grab their jagged edges so they don't leave crust
+                    fat_farms = cv2.dilate(fat_farms, k_med, iterations=1)
+                    
+                    # 4. SUBTRACT the Fat Farms from the map. Only long, thin streaks survive!
+                    thin_streaks = cv2.bitwise_and(road_base, cv2.bitwise_not(fat_farms))
+                    
+                    # 5. Smooth the streaks and connect any slightly broken lines
+                    streaks_connected = cv2.morphologyEx(thin_streaks, cv2.MORPH_CLOSE, k_med)
+                    
+                    # 6. Final pass: Delete random mesh / floating chunks
+                    num_r_labels, r_labels, r_stats, _ = cv2.connectedComponentsWithStats(streaks_connected, connectivity=8)
                     for j in range(1, num_r_labels):
-                        # Boosted the area threshold slightly to clear out the noise
-                        if r_stats[j, cv2.CC_STAT_AREA] >= 300: 
+                        # A streak must be a massive connected network (800+ pixels) to be a road
+                        if r_stats[j, cv2.CC_STAT_AREA] >= 800: 
                             final_patch[(r_labels == j) & (final_patch == 0) & (~nodata_mask)] = ID_ROAD
                     
                     # Apply Nodata mask and write patch
