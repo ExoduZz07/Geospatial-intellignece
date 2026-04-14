@@ -1,6 +1,6 @@
 # TERRASCAN
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](YOUR_COLAB_LINK_HERE)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ExoduZz07/Geospatial-intelligence/blob/main/Geospatial_AI.ipynb)
 [![Demo](https://img.shields.io/badge/Demo-YouTube-red?style=flat-square)](YOUR_YOUTUBE_LINK_HERE)
 
 Geospatial semantic segmentation pipeline. Extracts structural and hydrological features from high-resolution orthomosaics via ResNet18 U-Net and morphological post-processing. Designed for arbitrary-scale inputs without memory exhaustion.
