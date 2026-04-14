@@ -5,7 +5,6 @@ import rasterio
 from rasterio.windows import Window
 from tqdm import tqdm
 
-# IDs used for the final QGIS-ready map
 ID_RCC = 1; ID_TIN = 2; ID_TILED = 3; ID_UTILITY = 4; ID_WATER = 5; ID_ROAD = 6
 
 def apply_color_and_context(raw_img_path, ai_mask_path):
@@ -16,18 +15,14 @@ def apply_color_and_context(raw_img_path, ai_mask_path):
     os.makedirs(output_dir, exist_ok=True)
     final_map_path = os.path.join(output_dir, f"{village_name}_Final_Map.tif")
 
-    # Smooth Elliptical Kernels for natural shapes
     k_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     k_med = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
     k_large = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
     k_massive = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
-    
-    # NEW: A square kernel specifically to measure maximum road width (25 pixels)
     k_road_max = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
 
     with rasterio.open(raw_img_path) as src_raw, rasterio.open(ai_mask_path) as src_ai:
         meta = src_ai.meta.copy()
-        # Ensure metadata is clean for the final output
         meta.update({"count": 1, "dtype": 'uint8', "compress": 'lzw', "nodata": 0})
         
         with rasterio.open(final_map_path, 'w', **meta) as dst:
@@ -36,28 +31,28 @@ def apply_color_and_context(raw_img_path, ai_mask_path):
                     h, w = min(512, src_raw.height - y), min(512, src_raw.width - x)
                     window = Window(x, y, w, h)
                     
-                    # Read patches
+           
                     raw_patch = np.moveaxis(src_raw.read([1, 2, 3], window=window), 0, -1)
                     bgr_patch = cv2.cvtColor(raw_patch, cv2.COLOR_RGB2BGR)
                     
                     bgr_blurred = cv2.medianBlur(bgr_patch, 7)
                     hsv_blurred = cv2.cvtColor(bgr_blurred, cv2.COLOR_BGR2HSV)
                     
-                    # Apply a small blur to the AI mask to fix those 1-pixel tile grid seams!
+                 
                     ai_patch = cv2.medianBlur(src_ai.read(1, window=window), 3)
                     final_patch = np.zeros_like(ai_patch)
                     
-                    # Background Mask
+             
                     nodata_mask = np.all(raw_patch <= 15, axis=-1) | np.all(raw_patch >= 240, axis=-1)
                     
-                    # 1. UTILITIES (AI Class 2)
+              
                     final_patch[ai_patch == 2] = ID_UTILITY
                     
-                    # GRASSLAND VETO
+                
                     grass_mask = cv2.inRange(hsv_blurred, np.array([30, 40, 40]), np.array([85, 255, 255]))
                     ai_patch[(ai_patch == 1) & (grass_mask == 255)] = 0
                     
-                    # 2. ROOFTOP MATERIAL
+                    # 2. ROOFTOP 
                     building_mask = (ai_patch == 1)
                     H, S, V = hsv_blurred[:,:,0], hsv_blurred[:,:,1], hsv_blurred[:,:,2]
                     
@@ -97,52 +92,36 @@ def apply_color_and_context(raw_img_path, ai_mask_path):
                                 
                     final_patch[(water_filled == 255) & (final_patch == 0) & (~nodata_mask)] = ID_WATER
                     
-                 # =====================================================================
                     # 4. ROADS 
-                    # =====================================================================
+             
                     shadow_mask = (V < 55).astype(np.uint8) * 255
                     
-                    # Target 1: Asphalt & Old Concrete (Grey, very low saturation)
+                  
                     mask_r1 = cv2.inRange(hsv_blurred, np.array([0, 0, 60]), np.array([180, 35, 170])) 
-                    # Target 2: Fresh Concrete & Sand (Light grey/white)
+                   
                     mask_r2 = cv2.inRange(hsv_blurred, np.array([10, 15, 110]), np.array([25, 75, 230])) 
-                    # Target 3: Offroad / Dirt Trails (Brown, Tan, Higher saturation)
+                   
                     mask_dirt = cv2.inRange(hsv_blurred, np.array([10, 40, 50]), np.array([35, 180, 210]))
                     
-                    # Combine all road types!
+                
                     road_combined = mask_r1 | mask_r2 | mask_dirt
                     
                     road_no_shadows = cv2.bitwise_and(road_combined, cv2.bitwise_not(shadow_mask))
                     road_no_buildings = cv2.bitwise_and(road_no_shadows, cv2.bitwise_not(building_mask.astype(np.uint8)*255))
-                    
-                    # 1. Kill the microscopic glitter first
+                
                     road_base = cv2.morphologyEx(road_no_buildings, cv2.MORPH_OPEN, k_small)
                     
-                    # 2. Identify the "Farms" (Fat, wide blocks of pixels)
-                    # Even though mask_dirt picked up farms, they won't survive this 25x25 check.
                     k_fat = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
-                    fat_farms = cv2.morphologyEx(road_base, cv2.MORPH_OPEN, k_fat)
-                    
-                    # 3. Expand the farms slightly to grab their jagged edges
+                    fat_farms = cv2.morphologyEx(road_base, cv2.MORPH_OPEN, k_fat)            
                     fat_farms = cv2.dilate(fat_farms, k_med, iterations=1)
-                    
-                    # 4. SUBTRACT the Fat Farms from the map. Only long, thin offroads & paved roads survive!
                     thin_streaks = cv2.bitwise_and(road_base, cv2.bitwise_not(fat_farms))
-                    
-                    # 5. Smooth the streaks and connect any slightly broken dirt tracks
                     streaks_connected = cv2.morphologyEx(thin_streaks, cv2.MORPH_CLOSE, k_med)
-                    
-                    # 6. Final pass: Delete random mesh / floating chunks
                     num_r_labels, r_labels, r_stats, _ = cv2.connectedComponentsWithStats(streaks_connected, connectivity=8)
                     for j in range(1, num_r_labels):
-                        # A streak must be a massive connected network (800+ pixels)
                         if r_stats[j, cv2.CC_STAT_AREA] >= 800: 
                             final_patch[(r_labels == j) & (final_patch == 0) & (~nodata_mask)] = ID_ROAD
-                    
-                    # Apply Nodata mask and write patch
                     final_patch[nodata_mask] = 0
                     dst.write(final_patch, 1, window=window)
-            # Write Colormap for QGIS
             dst.write_colormap(1, {
                 0: (0,0,0,0), 1: (140,140,140,255), 2: (0,191,255,255), 
                 3: (225,87,89,255), 4: (156,39,176,255), 5: (78,121,167,255), 6: (242,203,108,255)
