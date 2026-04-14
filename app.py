@@ -116,7 +116,7 @@ with tab1:
     
     with col1:
         with st.container(border=True):
-            st.markdown("### 📍 Target Acquisition (Enterprise)")
+            st.markdown("### 📍 Target Acquisition")
             
             drive_path = "/content/drive/MyDrive/TerraScan_Data/"
             tif_files = glob.glob(f"{drive_path}*.tif")
