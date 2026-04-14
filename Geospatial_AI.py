@@ -97,13 +97,20 @@ def apply_color_and_context(raw_img_path, ai_mask_path):
                                 
                     final_patch[(water_filled == 255) & (final_patch == 0) & (~nodata_mask)] = ID_WATER
                     
-                  # =====================================================================
-                    # 4. ROADS (THE "LONG STREAK" ALGORITHM)
+                 # =====================================================================
+                    # 4. ROADS 
                     # =====================================================================
                     shadow_mask = (V < 55).astype(np.uint8) * 255
+                    
+                    # Target 1: Asphalt & Old Concrete (Grey, very low saturation)
                     mask_r1 = cv2.inRange(hsv_blurred, np.array([0, 0, 60]), np.array([180, 35, 170])) 
+                    # Target 2: Fresh Concrete & Sand (Light grey/white)
                     mask_r2 = cv2.inRange(hsv_blurred, np.array([10, 15, 110]), np.array([25, 75, 230])) 
-                    road_combined = cv2.bitwise_or(mask_r1, mask_r2)
+                    # Target 3: Offroad / Dirt Trails (Brown, Tan, Higher saturation)
+                    mask_dirt = cv2.inRange(hsv_blurred, np.array([10, 40, 50]), np.array([35, 180, 210]))
+                    
+                    # Combine all road types!
+                    road_combined = mask_r1 | mask_r2 | mask_dirt
                     
                     road_no_shadows = cv2.bitwise_and(road_combined, cv2.bitwise_not(shadow_mask))
                     road_no_buildings = cv2.bitwise_and(road_no_shadows, cv2.bitwise_not(building_mask.astype(np.uint8)*255))
@@ -112,23 +119,23 @@ def apply_color_and_context(raw_img_path, ai_mask_path):
                     road_base = cv2.morphologyEx(road_no_buildings, cv2.MORPH_OPEN, k_small)
                     
                     # 2. Identify the "Farms" (Fat, wide blocks of pixels)
-                    # A 25x25 block is too wide to be a road. Only open areas survive this.
+                    # Even though mask_dirt picked up farms, they won't survive this 25x25 check.
                     k_fat = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
                     fat_farms = cv2.morphologyEx(road_base, cv2.MORPH_OPEN, k_fat)
                     
-                    # 3. Expand the farms slightly to grab their jagged edges so they don't leave crust
+                    # 3. Expand the farms slightly to grab their jagged edges
                     fat_farms = cv2.dilate(fat_farms, k_med, iterations=1)
                     
-                    # 4. SUBTRACT the Fat Farms from the map. Only long, thin streaks survive!
+                    # 4. SUBTRACT the Fat Farms from the map. Only long, thin offroads & paved roads survive!
                     thin_streaks = cv2.bitwise_and(road_base, cv2.bitwise_not(fat_farms))
                     
-                    # 5. Smooth the streaks and connect any slightly broken lines
+                    # 5. Smooth the streaks and connect any slightly broken dirt tracks
                     streaks_connected = cv2.morphologyEx(thin_streaks, cv2.MORPH_CLOSE, k_med)
                     
                     # 6. Final pass: Delete random mesh / floating chunks
                     num_r_labels, r_labels, r_stats, _ = cv2.connectedComponentsWithStats(streaks_connected, connectivity=8)
                     for j in range(1, num_r_labels):
-                        # A streak must be a massive connected network (800+ pixels) to be a road
+                        # A streak must be a massive connected network (800+ pixels)
                         if r_stats[j, cv2.CC_STAT_AREA] >= 800: 
                             final_patch[(r_labels == j) & (final_patch == 0) & (~nodata_mask)] = ID_ROAD
                     
